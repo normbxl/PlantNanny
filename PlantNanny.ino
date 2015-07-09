@@ -1,10 +1,10 @@
-#define LOGGING
+#define TRACE(d) dbgSerial.println(d)
 
 #include <ESP8266Client.h>
 #include <ESP8266.h>
 #include <Wire.h>
 #include "OLED.h"
-#include "SoftwareSerial.h"
+#include <SoftwareSerial\SoftwareSerial.h>
 #include "HttpClient.h"
 
 #define NTC_PIN A0
@@ -27,9 +27,9 @@ const float moistureAlpha = 0.1;
 
 int moisture[] = { 0, 0 };
 
-SoftwareSerial espSerial(2, 3);
+SoftwareSerial dbgSerial(2, 3);
 
-ESP8266 wifi = ESP8266(espSerial);
+ESP8266 wifi = ESP8266(Serial, dbgSerial);
 IPAddress ipAddress;
 
 ESP8266Client espClient(wifi);
@@ -54,17 +54,19 @@ long dayAberration = 0L;
 byte tickCounter = 0;
 
 // Hardware-Serial > SoftwareSerial pass-through
-void serialEvent() {
-	char *buffer = (char *)malloc(Serial.available());
-	Serial.readBytes(buffer, Serial.available());
-	espSerial.write(buffer);
-}
+//void serialEvent() {
+//	char *buffer = (char *)malloc(Serial.available());
+//	Serial.readBytes(buffer, Serial.available());
+//	espSerial.write(buffer);
+//}
 
 void setup()
 {
 	Serial.begin(9600);
-	espSerial.begin(9600);
+	dbgSerial.begin(9600);
+	TRACE("> Starting");
 
+	pinMode(LED_BUILTIN, OUTPUT);
 	pinMode(PUMP_PIN, OUTPUT);
 	oled.begin(12, 2);
 	delay(100);
@@ -98,6 +100,8 @@ void setup()
 				oled.setCursor(0, 0);
 				status = wifi.getIP(ESP8266_WIFI_STATION, ipAddress);
 				oled.print(wifiStatusString(status));
+				TRACE("IP-Address:");
+				TRACE(ipAddress);
 				oled.setCursor(0, 1);
 				//if (status == ESP8266_COMMAND_OK || status == ESP8266_COMMAND_NO_CHANGE) {
 					oled.print(ipAddress[0]);
@@ -141,7 +145,7 @@ void setup()
 	moisture[0] = analogRead(MOISTURE_PIN_1);
 	moisture[1] = analogRead(MOISTURE_PIN_2);
 
-	// setupTimer();
+	setupTimer();
 }
 
 void setupTimer() {
@@ -173,6 +177,7 @@ ISR(TIMER1_COMPA_vect) {
 	moisture[0] = (int)((float)analogRead(MOISTURE_PIN_1) * moistureAlpha + (float)moisture[0]*(1.0 - moistureAlpha));
 	moisture[1] = (int)((float)analogRead(MOISTURE_PIN_2) * moistureAlpha + (float)moisture[1] * (1.0 - moistureAlpha));
 	now++;
+	digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 }
 
 float readTemperature()
@@ -186,14 +191,20 @@ float readTemperature()
 }
 
 unsigned long sendTS = 0L;
+bool waitingForResponse = false;
+
+int freeRam() {
+	extern int __heap_start, *__brkval;
+	int v;
+	return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
 
 void loop()
 {
-	
 	if (sendTS == 0L || millis() - sendTS > 60000) {
+		oled.clear();
 		oled.setCursor(0, 0);
 		oled.print("TX ");
-		
 		int err = http.get(serverIP, "192.168.1.43", "/time.php");
 		if (err > 0) {
 			oled.print("c:");
@@ -205,33 +216,42 @@ void loop()
 			oled.print(err);
 		}
 		sendTS = millis();
+		waitingForResponse = true;
 	}
 
-	if (http.available()) {
+	if (waitingForResponse && http.available()) {
 		oled.setCursor(0, 0);
 		oled.print("RX ");
 		int err = http.responseStatusCode();
 		oled.print("#");
 		oled.print(err);
 		if (err == 200) {
-			Serial.print("> Skipping Headers: ");
-			Serial.println(http.skipResponseHeaders());
+		
+			TRACE("> Skipping Headers: ");
+			
+			int res = http.skipResponseHeaders();
+			TRACE(res);
 			int length = http.contentLength();
-			Serial.println("> bytes received: ");
-			Serial.print(length);
+			TRACE("> bytes received: ");
+			TRACE(length);
 			uint8_t* buffer = (uint8_t*)malloc(length);
 			http.readBytes(buffer, length);
+			// Terminate String
+			buffer[length] = '\0';
+
 			oled.clear();
 			oled.setCursor(0, 0);
 			oled.print(">");
 			oled.print((char*)buffer);
-			Serial.print("HTTP-Content: ");
-			Serial.println((char*)buffer);
+			TRACE("HTTP-Content: ");
+			TRACE((char*)buffer);
 		}
 		else {
 			oled.print("r:");
 			oled.print(err);
 		}
+		http.stop();
+		waitingForResponse = false;
 	}
 	
 	return;

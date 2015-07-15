@@ -6,16 +6,17 @@
 	#define TRACE(d)
 #endif
 
-#include <avr/wdt.h>
-#include <ESP8266Client.h>
+// #include <avr/wdt.h>
 #include <ESP8266.h>
+#include <ESP8266Client.h>
+#include <HttpClient.h>
+
 #include <Wire.h>
 #include "OLED.h"
 #ifdef DEBUG
-	#include <SoftwareSerial\SoftwareSerial.h>
+	#include <SoftwareSerial.h>
 #endif
-#include "HttpClient.h"
-#include <EEPROM\EEPROM.h>
+#include <EEPROM.h>
 
 
 #define NTC_PIN A0
@@ -52,7 +53,11 @@ int moisture[] = { 0, 0 };
 IPAddress ipAddress;
 
 ESP8266Client espClient(wifi);
-HttpClient http(espClient);
+#ifdef DEBUG
+	HttpClient http = HttpClient(espClient, dbgSerial);
+#else
+	HttpClient http = HttpClient(espClient);
+#endif
 
 IPAddress serverIP(46, 30, 212, 138);
 
@@ -174,9 +179,9 @@ void setup()
 	delay(1000);
 
 	if (setupWiFi()) {
-		noInterrupts();
-		wdt_enable(WDTO_8S);
-		interrupts();
+		// noInterrupts();
+		// wdt_enable(WDTO_8S);
+		// interrupts();
 	}
 
 	delay(1000);
@@ -284,9 +289,16 @@ void receiveHttp() {
 	oled.print("RX ");
 	int err = http.responseStatusCode();
 	oled.print("#");
+	
 	oled.print(err);
+	err = 200;
 	if (err == 200) {
 		int res = http.skipResponseHeaders();
+		TRACE(F("Transfer Encoding:"));
+		TRACE(http.getTransferEncoding());
+		TRACE(F("Content Length:"));
+		TRACE(http.contentLength());
+
 		int length = http.contentLength();
 		uint8_t* buffer = (uint8_t*)malloc(length+1);
 		if (buffer != NULL) {
@@ -351,7 +363,7 @@ void parseReceivedData(const char* data) {
 
 void loop()
 {
-	wdt_reset();
+	// wdt_reset();
 	if (sendTS == 0L || now - sendTS > 300) {
 		sendSensorData();
 	}
@@ -364,8 +376,8 @@ void loop()
 		tick = false;
 
 		oled.setCursor(0, 1);
-		oled.print(Tavg, 0);
-		oled.print(' ');
+		oled.print((int)Tavg);
+		oled.print("C ");
 		switch (state) {
 		case IDLE:
 			if (now > nextPumpTS - dayAberration) {
@@ -384,7 +396,7 @@ void loop()
 				lastPumpTS = now;
 			}
 			else {
-				float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / 20.0; // Null-wert bei avg 15 °C
+				float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / 25.0; // Null-wert bei avg 25 °C
 				dayAberration = (long)(abFac*(float)oneDay);
 
 				long Tdiff = (long)(nextPumpTS - dayAberration) - now;

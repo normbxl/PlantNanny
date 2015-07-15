@@ -1,21 +1,34 @@
-#define TRACE(d) dbgSerial.println(d)
+#define DEBUG
 
+#ifdef DEBUG
+	#define TRACE(d) dbgSerial.println(d)
+#else
+	#define TRACE(d)
+#endif
+
+#include <avr/wdt.h>
 #include <ESP8266Client.h>
 #include <ESP8266.h>
 #include <Wire.h>
 #include "OLED.h"
-#include <SoftwareSerial\SoftwareSerial.h>
+#ifdef DEBUG
+	#include <SoftwareSerial\SoftwareSerial.h>
+#endif
 #include "HttpClient.h"
+#include <EEPROM\EEPROM.h>
+
 
 #define NTC_PIN A0
 #define MOISTURE_PIN_1 A1
 #define MOISTURE_PIN_2 A2
-#define PUMP_PIN A3
+#define PUMP_PIN 12
 
+#define ROM_ADDRESS 23
 
 #define WIFI_SSID "lovely-N"
 #define WIFI_PWD "d0tlab1$$up1"
 
+const char* HOST_NAME = "d-parc.be";
 unsigned int MOISTURE_PUMP_THRESHOLD = 300;
 
 OLED oled;
@@ -28,15 +41,20 @@ const float moistureAlpha = 0.1;
 
 int moisture[] = { 0, 0 };
 
-SoftwareSerial dbgSerial(2, 3);
+#ifdef DEBUG
+	SoftwareSerial dbgSerial(2, 3);
+	ESP8266 wifi = ESP8266(Serial, dbgSerial);
+#else
+	ESP8266 wifi = ESP8266(Serial);
+#endif
 
-ESP8266 wifi = ESP8266(Serial, dbgSerial);
+
 IPAddress ipAddress;
 
 ESP8266Client espClient(wifi);
 HttpClient http(espClient);
 
-IPAddress serverIP(192, 168, 1, 43);
+IPAddress serverIP(46, 30, 212, 138);
 
 enum States {
 	IDLE,
@@ -55,6 +73,9 @@ long dayAberration = 0L;
 byte tickCounter = 0;
 volatile boolean tick = false;
 
+unsigned long sendTS = 0L;
+bool waitingForResponse = false;
+
 // Hardware-Serial > SoftwareSerial pass-through
 //void serialEvent() {
 //	char *buffer = (char *)malloc(Serial.available());
@@ -62,30 +83,12 @@ volatile boolean tick = false;
 //	espSerial.write(buffer);
 //}
 
-void setup()
-{
-	Serial.begin(9600);
-	dbgSerial.begin(9600);
-	TRACE("> Starting");
-
-	pinMode(LED_BUILTIN, OUTPUT);
-	pinMode(PUMP_PIN, OUTPUT);
-	oled.begin(12, 2);
-	delay(100);
-	oled.clear();
-
-	oled.setCursor(0, 0);
-	oled.print("pump-test");
-	digitalWrite(PUMP_PIN, HIGH);
-	delay(1000);
-	digitalWrite(PUMP_PIN, LOW);
-	oled.print("ok");
-	delay(1000);
-
+boolean setupWiFi() {
+	boolean result = false;
 	oled.setCursor(0, 0);
 	oled.print("WiFi: ");
 	if (wifi.begin() == true) {
-        wifi.setTimeout(5000);
+		wifi.setTimeout(5000);
 		wifi.restart();
 		oled.print("OK");
 		delay(500);
@@ -106,41 +109,77 @@ void setup()
 				TRACE(ipAddress);
 				oled.setCursor(0, 1);
 				//if (status == ESP8266_COMMAND_OK || status == ESP8266_COMMAND_NO_CHANGE) {
-					oled.print(ipAddress[0]);
-					oled.print('.');
-					oled.print(ipAddress[1]);
-					oled.print('.');
-					oled.print(ipAddress[2]);
-					oled.print('.');
-					oled.print(ipAddress[3]);
+				oled.print(ipAddress[0]);
+				oled.print(".");
+				oled.print(ipAddress[1]);
+				oled.print(".");
+				oled.print(ipAddress[2]);
+				oled.print(".");
+				oled.print(ipAddress[3]);
 				//}
 				/*else {
-					oled.setCursor(0, 0);
-					oled.print("IP Address  ");
-					oled.setCursor(0, 1);
-					oled.print(wifiStatusString(status));
-					delay(5000);
+				oled.setCursor(0, 0);
+				oled.print("IP Address  ");
+				oled.setCursor(0, 1);
+				oled.print(wifiStatusString(status));
+				delay(5000);
 				}*/
 				delay(1000);
-				
+
 			}
 			else {
 				oled.setCursor(0, 1);
 				oled.print(wifiStatusString(status));
 			}
 			espClient.begin();
-			
+			result = true;
 		}
 		else {
 			oled.setCursor(0, 1);
 			oled.print(wifiStatusString(status));
 		}
-		
 	}
 	else {
 		oled.print("FAIL");
 	}
-	delay(5000);
+	return result;
+}
+
+void setup()
+{
+	Serial.begin(9600);
+#ifdef DEBUG
+	dbgSerial.begin(9600);
+#endif
+	TRACE("> Starting");
+
+	pinMode(LED_BUILTIN, OUTPUT);
+	pinMode(PUMP_PIN, OUTPUT);
+
+	MOISTURE_PUMP_THRESHOLD = readPumpThreshold();
+
+	oled.begin(12, 2);
+	delay(100);
+	oled.clear();
+
+	oled.setCursor(0, 1);
+	oled.print((int)MOISTURE_PUMP_THRESHOLD);
+	
+	oled.setCursor(0, 0);
+	oled.print("pump-test");
+	digitalWrite(PUMP_PIN, HIGH);
+	delay(1000);
+	digitalWrite(PUMP_PIN, LOW);
+	oled.print("ok");
+	delay(1000);
+
+	if (setupWiFi()) {
+		noInterrupts();
+		wdt_enable(WDTO_8S);
+		interrupts();
+	}
+
+	delay(1000);
 
 	Tnow = Tavg = readTemperature();
 
@@ -179,7 +218,7 @@ ISR(TIMER1_COMPA_vect) {
 	moisture[0] = (int)((float)analogRead(MOISTURE_PIN_1) * moistureAlpha + (float)moisture[0] * (1.0 - moistureAlpha));
 	moisture[1] = (int)((float)analogRead(MOISTURE_PIN_2) * moistureAlpha + (float)moisture[1] * (1.0 - moistureAlpha));
 	now++;
-	digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+	// digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	tick = true;
 }
 
@@ -193,11 +232,16 @@ float readTemperature()
 	return temp;
 }
 
-unsigned long sendTS = 0L;
-bool waitingForResponse = false;
+unsigned int readPumpThreshold() {
+	return (unsigned int)((EEPROM.read(ROM_ADDRESS) << 8) + EEPROM.read(ROM_ADDRESS + 1));
+}
+void savePumpThreshold() {
+	EEPROM.write(ROM_ADDRESS, highByte(MOISTURE_PUMP_THRESHOLD));
+	EEPROM.write(ROM_ADDRESS + 1, lowByte(MOISTURE_PUMP_THRESHOLD));
+}
 
 void sendSensorData() {
-	String url = F("/d-parc/fb_flora_feed/update.php?cmd=save&s[0][id]=1&s[0][t]=0&s[1][id]=2&s[1][t]=0&s[2][id]=3&s[2][t]=1&s[0][v]=");
+	String url = F("/plant_nanny/update.php?cmd=save&s[0][id]=1&s[0][t]=0&s[1][id]=2&s[1][t]=0&s[2][id]=3&s[2][t]=1&s[0][v]=");
 	url.concat(moisture[0]);
 	url.concat("&s[1][v]=");
 	url.concat(moisture[1]);
@@ -205,7 +249,8 @@ void sendSensorData() {
 	url.concat(Tavg);
 	oled.setCursor(0, 0);
 	oled.print("TX ");
-	int err = http.get(serverIP, "192.168.1.43", url.c_str());
+	
+	int err = http.get(serverIP, HOST_NAME, url.c_str());
 	if (err > 0) {
 		oled.print("c:");
 		oled.print(err);
@@ -216,6 +261,19 @@ void sendSensorData() {
 		oled.print(err);
 	}
 	sendTS = now;
+	waitingForResponse = true;
+}
+
+void sendPumpPing(boolean pump) {
+	String url = F("/plant_nanny/update.php?cmd=save&s[0][id]=1&s[0][t]=2&s[1][id]=2&s[1][t]=2&");
+	if (pump) {
+		url.concat(F("s[0][v]=1&s[1][v]=1"));
+	}
+	else {
+		url.concat(F("s[0][v]=0&s[1][v]=0"));
+	}
+	sendTS = now;
+	http.get(serverIP, HOST_NAME, url.c_str());
 	waitingForResponse = true;
 }
 
@@ -254,10 +312,7 @@ void receiveHttp() {
 			oled.print("MALLOC ");
 		}
 	}
-	else {
-		oled.print("r:");
-		oled.print(err);
-	}
+	
 	http.stop();
 	
 }
@@ -280,6 +335,7 @@ void parseReceivedData(const char* data) {
 				int newThreshold = value.toInt();
 				if (newThreshold > 0) {
 					MOISTURE_PUMP_THRESHOLD = (uint16_t)newThreshold;
+					savePumpThreshold();
 				}
 			}
 			else if (varname == F("cmd")) {
@@ -295,6 +351,7 @@ void parseReceivedData(const char* data) {
 
 void loop()
 {
+	wdt_reset();
 	if (sendTS == 0L || now - sendTS > 300) {
 		sendSensorData();
 	}
@@ -316,11 +373,13 @@ void loop()
 				oled.setCursor(0, 1);
 				if (moisture[0] < MOISTURE_PUMP_THRESHOLD && moisture[1] < MOISTURE_PUMP_THRESHOLD) {
 					digitalWrite(PUMP_PIN, HIGH);
-					digitalWrite(13, HIGH);
+					digitalWrite(LED_BUILTIN, HIGH);
 					oled.print("pumping     ");
+					sendPumpPing(true);
 				}
 				else {
 					oled.print("pump suspend");
+					sendPumpPing(false);
 				}
 				lastPumpTS = now;
 			}
@@ -341,7 +400,7 @@ void loop()
 			if (now > lastPumpTS + 65L) {
 				state = IDLE;
 				digitalWrite(PUMP_PIN, LOW);
-				digitalWrite(13, LOW);
+				digitalWrite(LED_BUILTIN, LOW);
 				oled.clear();
 				nextPumpTS += oneDay;
 			}

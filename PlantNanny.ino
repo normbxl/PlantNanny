@@ -246,11 +246,14 @@ void savePumpThreshold() {
 }
 
 void sendSensorData() {
-	String url = F("/plant_nanny/update.php?cmd=save&s[0][id]=1&s[0][t]=0&s[1][id]=2&s[1][t]=0&s[2][id]=3&s[2][t]=1&s[0][v]=");
+	// reset
+	http.stop();
+
+	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
 	url.concat(moisture[0]);
-	url.concat("&s[1][v]=");
+	url.concat("&s[]=2,M,");
 	url.concat(moisture[1]);
-	url.concat("&s[2][v]=");
+	url.concat("&s[]=3,T,");
 	url.concat(Tavg);
 	oled.setCursor(0, 0);
 	oled.print("TX ");
@@ -270,12 +273,15 @@ void sendSensorData() {
 }
 
 void sendPumpPing(boolean pump) {
-	String url = F("/plant_nanny/update.php?cmd=save&s[0][id]=1&s[0][t]=2&s[1][id]=2&s[1][t]=2&");
+	// reset
+	http.stop();
+
+	String url = F("/plant_nanny/update.php?cmd=save&");
 	if (pump) {
-		url.concat(F("s[0][v]=1&s[1][v]=1"));
+		url.concat(F("s[]=1,P,1&s[]=2,P,1"));
 	}
 	else {
-		url.concat(F("s[0][v]=0&s[1][v]=0"));
+		url.concat(F("s[]=1,P,0&s[]=2,P,0"));
 	}
 	sendTS = now;
 	http.get(serverIP, HOST_NAME, url.c_str());
@@ -352,7 +358,7 @@ void parseReceivedData(const char* data) {
 			}
 			else if (varname == F("cmd")) {
 				if (value == F("pump_now")) {
-					nextPumpTS = now + dayAberration;
+					nextPumpTS = now + dayAberration - 1;
 				}
 			}
 		}
@@ -383,7 +389,7 @@ void loop()
 			if (now > nextPumpTS - dayAberration) {
 				state = PUMP;
 				oled.setCursor(0, 1);
-				if (moisture[0] < MOISTURE_PUMP_THRESHOLD && moisture[1] < MOISTURE_PUMP_THRESHOLD) {
+				if (moisture[0] + moisture[1] < MOISTURE_PUMP_THRESHOLD * 2) {
 					digitalWrite(PUMP_PIN, HIGH);
 					digitalWrite(LED_BUILTIN, HIGH);
 					oled.print("pumping     ");

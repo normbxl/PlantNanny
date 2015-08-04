@@ -80,6 +80,7 @@ volatile boolean tick = false;
 
 unsigned long sendTS = 0L;
 bool waitingForResponse = false;
+int DAY_ABR_ZERO = 20;
 
 // Hardware-Serial > SoftwareSerial pass-through
 //void serialEvent() {
@@ -94,7 +95,6 @@ boolean setupWiFi() {
 	oled.print("WiFi: ");
 	if (wifi.begin() == true) {
 		wifi.setTimeout(5000);
-		wifi.restart();
 		oled.print("OK");
 		delay(500);
 		oled.setCursor(0, 1);
@@ -162,6 +162,7 @@ void setup()
 	pinMode(PUMP_PIN, OUTPUT);
 
 	MOISTURE_PUMP_THRESHOLD = readPumpThreshold();
+	DAY_ABR_ZERO = readDayAbrZero() != 0 ? readDayAbrZero() : DAY_ABR_ZERO;
 
 	oled.begin(12, 2);
 	delay(100);
@@ -178,12 +179,8 @@ void setup()
 	oled.print("ok");
 	delay(1000);
 
-	if (setupWiFi()) {
-		// noInterrupts();
-		// wdt_enable(WDTO_8S);
-		// interrupts();
-	}
-
+	setupWiFi();
+		
 	delay(1000);
 
 	Tnow = Tavg = readTemperature();
@@ -245,10 +242,25 @@ void savePumpThreshold() {
 	EEPROM.write(ROM_ADDRESS + 1, lowByte(MOISTURE_PUMP_THRESHOLD));
 }
 
-void sendSensorData() {
-	// reset
-	http.stop();
+void saveDayAbrZero() {
+	EEPROM.write(ROM_ADDRESS + 2, highByte(DAY_ABR_ZERO));
+	EEPROM.write(ROM_ADDRESS + 3, lowByte(DAY_ABR_ZERO));
+}
 
+int readDayAbrZero() {
+	return (int)((EEPROM.read(ROM_ADDRESS+2) << 8) + EEPROM.read(ROM_ADDRESS + 3));
+}
+
+void sendSensorData() {
+	if (wifi.test() != ESP8266_COMMAND_OK) {
+		wifi.restart();
+		delay(1000);
+		setupWiFi();
+	}
+	else {
+		// reset
+		http.stop();
+	}
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
 	url.concat(moisture[0]);
 	url.concat("&s[]=2,M,");
@@ -273,8 +285,15 @@ void sendSensorData() {
 }
 
 void sendPumpPing(boolean pump) {
-	// reset
-	http.stop();
+	if (wifi.test() != ESP8266_COMMAND_OK) {
+		wifi.restart();
+		delay(1000);
+		setupWiFi();
+	}
+	else {
+		// reset
+		http.stop();
+	}
 
 	String url = F("/plant_nanny/update.php?cmd=save&");
 	if (pump) {
@@ -361,6 +380,10 @@ void parseReceivedData(const char* data) {
 					nextPumpTS = now + dayAberration - 1;
 				}
 			}
+			else if (varname == F("abr_temp")) {
+				DAY_ABR_ZERO = (int)value.toInt();
+				saveDayAbrZero();
+			}
 		}
 		iEqual = newEqual;
 	} 
@@ -369,6 +392,7 @@ void parseReceivedData(const char* data) {
 
 void loop()
 {
+	
 	// wdt_reset();
 	if (sendTS == 0L || now - sendTS > 300) {
 		sendSensorData();
@@ -402,7 +426,7 @@ void loop()
 				lastPumpTS = now;
 			}
 			else {
-				float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / 25.0; // Null-wert bei avg 25 °C
+				float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
 				dayAberration = (long)(abFac*(float)oneDay);
 
 				long Tdiff = (long)(nextPumpTS - dayAberration) - now;

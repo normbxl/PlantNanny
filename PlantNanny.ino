@@ -170,6 +170,8 @@ void setup()
 
 	oled.setCursor(0, 1);
 	oled.print((int)MOISTURE_PUMP_THRESHOLD);
+	oled.print(" ");
+	oled.print(DAY_ABR_ZERO);
 	
 	oled.setCursor(0, 0);
 	oled.print("pump-test");
@@ -444,7 +446,7 @@ void loop()
 				digitalWrite(PUMP_PIN, LOW);
 				digitalWrite(LED_BUILTIN, LOW);
 				oled.clear();
-				nextPumpTS += oneDay;
+				nextPumpTS = now + oneDay;
 			}
 			break;
 		}

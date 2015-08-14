@@ -6,7 +6,7 @@
 	#define TRACE(d)
 #endif
 
-// #include <avr/wdt.h>
+#include <avr/wdt.h>
 #include <ESP8266.h>
 #include <ESP8266Client.h>
 #include <HttpClient.h>
@@ -41,6 +41,8 @@ const float Talpha = 0.005;
 const float moistureAlpha = 0.1;
 
 int moisture[] = { 0, 0 };
+
+bool wasWDTReset = false;
 
 #ifdef DEBUG
 	SoftwareSerial dbgSerial(2, 3);
@@ -88,6 +90,20 @@ int DAY_ABR_ZERO = 20;
 //	Serial.readBytes(buffer, Serial.available());
 //	espSerial.write(buffer);
 //}
+
+/*
+Watchdog requires Optiboot firmware, otherwise a WDT-reset will result in an endless reboot
+*/
+
+void get_mcusr(void) \
+	__attribute__((naked)) \
+	__attribute__((section(".init3")));
+void get_mcusr(void) {
+	mcusr_mirror = MCUSR;
+	MCUSR = 0;
+	wdt_disable();
+}
+
 
 boolean setupWiFi() {
 	boolean result = false;
@@ -150,13 +166,23 @@ boolean setupWiFi() {
 	return result;
 }
 
-void setup()
-{
+uint8_t mcusr_mirror __attribute__((section(".noinit")));
+
+
+
+
+void setup() {
+	wasWDTReset = mcusr_mirror && (1 << WDRF) == WDRF;
+	
 	Serial.begin(9600);
 #ifdef DEBUG
 	dbgSerial.begin(9600);
 #endif
 	TRACE("> Starting");
+	
+	if (wasWDTReset) {
+		TRACE(F("WDT Reset"));
+	}
 
 	pinMode(LED_BUILTIN, OUTPUT);
 	pinMode(PUMP_PIN, OUTPUT);
@@ -191,6 +217,8 @@ void setup()
 	moisture[1] = analogRead(MOISTURE_PIN_2);
 
 	setupTimer();
+
+	wdt_enable(WDTO_4S);
 }
 
 void setupTimer() {
@@ -257,12 +285,14 @@ void sendSensorData() {
 	if (wifi.test() != ESP8266_COMMAND_OK) {
 		wifi.restart();
 		delay(1000);
+		wdt_reset();
 		setupWiFi();
 	}
 	else {
 		// reset
 		http.stop();
 	}
+	wdt_reset();
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
 	url.concat(moisture[0]);
 	url.concat("&s[]=2,M,");
@@ -273,6 +303,7 @@ void sendSensorData() {
 	oled.print("TX ");
 	
 	int err = http.get(serverIP, HOST_NAME, url.c_str());
+	wdt_reset();
 	if (err > 0) {
 		oled.print("c:");
 		oled.print(err);
@@ -290,7 +321,9 @@ void sendPumpPing(boolean pump) {
 	if (wifi.test() != ESP8266_COMMAND_OK) {
 		wifi.restart();
 		delay(1000);
+		wdt_reset();
 		setupWiFi();
+		wdt_reset();
 	}
 	else {
 		// reset
@@ -306,6 +339,7 @@ void sendPumpPing(boolean pump) {
 	}
 	sendTS = now;
 	http.get(serverIP, HOST_NAME, url.c_str());
+	wdt_reset();
 	waitingForResponse = true;
 }
 
@@ -395,7 +429,7 @@ void parseReceivedData(const char* data) {
 void loop()
 {
 	
-	// wdt_reset();
+	wdt_reset();
 	if (sendTS == 0L || now - sendTS > 300) {
 		sendSensorData();
 	}

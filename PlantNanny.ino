@@ -20,8 +20,8 @@
 
 
 #define NTC_PIN A0
-#define MOISTURE_PIN_1 A1
-#define MOISTURE_PIN_2 A2
+#define MOISTURE_SWITCH A2
+#define MOISTURE_PIN A1
 #define PUMP_PIN 12
 
 #define ROM_ADDRESS 23
@@ -30,7 +30,7 @@
 #define WIFI_PWD "d0tlab1$$up1"
 
 const char* HOST_NAME = "d-parc.be";
-unsigned int MOISTURE_PUMP_THRESHOLD = 300;
+unsigned int MOISTURE_PUMP_THRESHOLD = 700;
 
 OLED oled;
 
@@ -40,9 +40,10 @@ volatile float Tnow;
 const float Talpha = 0.005;
 const float moistureAlpha = 0.1;
 
-int moisture[] = { 0, 0 };
+int moisture =  0;
 
 bool wasWDTReset = false;
+bool forcePumping = false;
 
 #ifdef DEBUG
 	SoftwareSerial dbgSerial(2, 3);
@@ -84,16 +85,12 @@ unsigned long sendTS = 0L;
 bool waitingForResponse = false;
 int DAY_ABR_ZERO = 20;
 
-// Hardware-Serial > SoftwareSerial pass-through
-//void serialEvent() {
-//	char *buffer = (char *)malloc(Serial.available());
-//	Serial.readBytes(buffer, Serial.available());
-//	espSerial.write(buffer);
-//}
 
 /*
 Watchdog requires Optiboot firmware, otherwise a WDT-reset will result in an endless reboot
 */
+
+uint8_t mcusr_mirror __attribute__((section(".noinit")));
 
 void get_mcusr(void) \
 	__attribute__((naked)) \
@@ -166,62 +163,26 @@ boolean setupWiFi() {
 	return result;
 }
 
-uint8_t mcusr_mirror __attribute__((section(".noinit")));
 
 
 
-
-void setup() {
-	wasWDTReset = mcusr_mirror && (1 << WDRF) == WDRF;
-	
-	Serial.begin(9600);
-#ifdef DEBUG
-	dbgSerial.begin(9600);
-#endif
-	TRACE("> Starting");
-	
-	if (wasWDTReset) {
-		TRACE(F("WDT Reset"));
-	}
-
-	pinMode(LED_BUILTIN, OUTPUT);
-	pinMode(PUMP_PIN, OUTPUT);
-
-	MOISTURE_PUMP_THRESHOLD = readPumpThreshold();
-	DAY_ABR_ZERO = readDayAbrZero() != 0 ? readDayAbrZero() : DAY_ABR_ZERO;
-
-	oled.begin(12, 2);
-	delay(100);
-	oled.clear();
-
-	oled.setCursor(0, 1);
-	oled.print((int)MOISTURE_PUMP_THRESHOLD);
-	oled.print(" ");
-	oled.print(DAY_ABR_ZERO);
-	
-	oled.setCursor(0, 0);
-	oled.print("pump-test");
-	digitalWrite(PUMP_PIN, HIGH);
-	delay(1000);
-	digitalWrite(PUMP_PIN, LOW);
-	oled.print("ok");
-	delay(1000);
-
-	setupWiFi();
-		
-	delay(1000);
-
-	Tnow = Tavg = readTemperature();
-
-	moisture[0] = analogRead(MOISTURE_PIN_1);
-	moisture[1] = analogRead(MOISTURE_PIN_2);
-
-	setupTimer();
-
-	wdt_enable(WDTO_4S);
+int readMoisture() {
+  digitalWrite(MOISTURE_SWITCH, LOW);
+  delay(1);
+  int val=0;
+  for(byte i=0; i<4; i++) {
+    val += analogRead(MOISTURE_PIN);
+    delay(1);
+  }
+  digitalWrite(MOISTURE_SWITCH, HIGH);
+  // averaging
+  // reading inverted by circuit
+  return 1023 - (val >> 2); // div 4
 }
 
+
 void setupTimer() {
+  // set timer to 1 sec
 	cli();          // disable global interrupts
 	TCCR1A = 0;     // set entire TCCR1A register to 0
 	TCCR1B = 0;     // same for TCCR1B
@@ -238,6 +199,16 @@ void setupTimer() {
 	sei();          // enable global interrupts  
 }
 
+float readTemperature()
+{
+  int B = 3975;
+  int val = analogRead(A0);
+  float resistance = (float)(1023.0 - val) * 10000.0 / (float)val;
+  float temp = 1 / (log(resistance / 10000) / B + 1 / 298.15) - 273.15;
+
+  return temp;
+}
+
 ISR(TIMER1_COMPA_vect) {
 	Tnow = readTemperature();
 
@@ -246,22 +217,12 @@ ISR(TIMER1_COMPA_vect) {
 	if (tickCounter == 0) {
 		Tavg = (Tnow * Talpha) + Tavg*(1.0 - Talpha);
 	}
-
-	moisture[0] = (int)((float)analogRead(MOISTURE_PIN_1) * moistureAlpha + (float)moisture[0] * (1.0 - moistureAlpha));
-	moisture[1] = (int)((float)analogRead(MOISTURE_PIN_2) * moistureAlpha + (float)moisture[1] * (1.0 - moistureAlpha));
+  
+	moisture = (int)((float)readMoisture() * moistureAlpha + (float)moisture * (1.0 - moistureAlpha));
+	
 	now++;
 	// digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	tick = true;
-}
-
-float readTemperature()
-{
-	int B = 3975;
-	int val = analogRead(A0);
-	float resistance = (float)(1023.0 - val) * 10000.0 / (float)val;
-	float temp = 1 / (log(resistance / 10000) / B + 1 / 298.15) - 273.15;
-
-	return temp;
 }
 
 unsigned int readPumpThreshold() {
@@ -293,10 +254,9 @@ void sendSensorData() {
 		http.stop();
 	}
 	wdt_reset();
+  // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump), value
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
-	url.concat(moisture[0]);
-	url.concat("&s[]=2,M,");
-	url.concat(moisture[1]);
+	url.concat(moisture);
 	url.concat("&s[]=3,T,");
 	url.concat(Tavg);
 	oled.setCursor(0, 0);
@@ -413,7 +373,8 @@ void parseReceivedData(const char* data) {
 			}
 			else if (varname == F("cmd")) {
 				if (value == F("pump_now")) {
-					nextPumpTS = now + dayAberration - 1;
+					// nextPumpTS = now + dayAberration - 1;
+          forcePumping = true;
 				}
 			}
 			else if (varname == F("abr_temp")) {
@@ -425,6 +386,58 @@ void parseReceivedData(const char* data) {
 	} 
 	while (iEqual != -1);
 }
+
+void setup() {
+  wasWDTReset = mcusr_mirror && (1 << WDRF) == WDRF;
+  
+  digitalWrite(MOISTURE_SWITCH, HIGH);
+  
+  Serial.begin(115200);
+#ifdef DEBUG
+  dbgSerial.begin(9600);
+#endif
+  TRACE("> Starting");
+  
+  if (wasWDTReset) {
+    TRACE(F("WDT Reset"));
+  }
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(PUMP_PIN, OUTPUT);
+
+  MOISTURE_PUMP_THRESHOLD = readPumpThreshold();
+  DAY_ABR_ZERO = readDayAbrZero() != 0 ? readDayAbrZero() : DAY_ABR_ZERO;
+
+  oled.begin(12, 2);
+  delay(100);
+  oled.clear();
+
+  oled.setCursor(0, 1);
+  oled.print((int)MOISTURE_PUMP_THRESHOLD);
+  oled.print(" ");
+  oled.print(DAY_ABR_ZERO);
+  
+  oled.setCursor(0, 0);
+  oled.print("pump-test");
+  digitalWrite(PUMP_PIN, HIGH);
+  delay(1000);
+  digitalWrite(PUMP_PIN, LOW);
+  oled.print("ok");
+  delay(1000);
+
+  setupWiFi();
+    
+  delay(1000);
+
+  Tnow = Tavg = readTemperature();
+
+  moisture = readMoisture();
+  
+  setupTimer();
+  // enable watchdog-timer at 4 seconds
+  wdt_enable(WDTO_4S);
+}
+
 
 void loop()
 {
@@ -446,10 +459,10 @@ void loop()
 		oled.print("C ");
 		switch (state) {
 		case IDLE:
-			if (now > nextPumpTS - dayAberration) {
+			if (now > nextPumpTS - dayAberration || forcePumping) {
 				state = PUMP;
 				oled.setCursor(0, 1);
-				if (moisture[0] + moisture[1] < MOISTURE_PUMP_THRESHOLD * 2) {
+				if (moisture < MOISTURE_PUMP_THRESHOLD || forcePumping) {
 					digitalWrite(PUMP_PIN, HIGH);
 					digitalWrite(LED_BUILTIN, HIGH);
 					oled.print("pumping     ");
@@ -459,6 +472,7 @@ void loop()
 					oled.print("pump suspend");
 					sendPumpPing(false);
 				}
+        forcePumping = false;
 				lastPumpTS = now;
 			}
 			else {

@@ -22,12 +22,15 @@
 #define NTC_PIN A0
 #define MOISTURE_SWITCH A2
 #define MOISTURE_PIN A1
+#define VCC_PIN A3
 #define PUMP_PIN 12
 
 #define ROM_ADDRESS 23
 
 #define WIFI_SSID "lovely-N"
 #define WIFI_PWD "d0tlab1$$up1"
+
+#define ADC_REF 3.3
 
 const char* HOST_NAME = "d-parc.be";
 unsigned int MOISTURE_PUMP_THRESHOLD = 700;
@@ -36,6 +39,7 @@ OLED oled;
 
 volatile float Tavg;
 volatile float Tnow;
+volatile float vcc;
 
 const float Talpha = 0.005;
 const float moistureAlpha = 0.1;
@@ -164,8 +168,6 @@ boolean setupWiFi() {
 }
 
 
-
-
 int readMoisture() {
   digitalWrite(MOISTURE_SWITCH, LOW);
   delay(1);
@@ -180,6 +182,11 @@ int readMoisture() {
   return 1023 - (val >> 2); // div 4
 }
 
+float readVcc() {
+  // is connected via a voltage divider which halfs the real volate
+  float val=(float)analogRead(VCC_PIN);
+  return (val/511.5) * ADC_REF;
+}
 
 void setupTimer() {
   // set timer to 1 sec
@@ -254,11 +261,13 @@ void sendSensorData() {
 		http.stop();
 	}
 	wdt_reset();
-  // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump), value
+  // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump, V-oltage), value
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
 	url.concat(moisture);
 	url.concat("&s[]=3,T,");
 	url.concat(Tavg);
+  url.concat("&s[]=4,V,");
+  url.concat(vcc);
 	oled.setCursor(0, 0);
 	oled.print("TX ");
 	
@@ -432,6 +441,8 @@ void setup() {
   Tnow = Tavg = readTemperature();
 
   moisture = readMoisture();
+
+  vcc = readVcc();
   
   setupTimer();
   // enable watchdog-timer at 4 seconds

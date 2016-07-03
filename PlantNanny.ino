@@ -466,8 +466,14 @@ void loop()
 		tick = false;
 
 		oled.setCursor(0, 1);
-		oled.print((int)Tavg);
-		oled.print("C ");
+    if (now % 2 == 0) {
+		  oled.print((int)Tavg);
+		  oled.print("C ");
+    }
+    else {
+      oled.print(vcc, 2);
+      oled.print("V ");
+    }
 		switch (state) {
 		case IDLE:
 			if (now > nextPumpTS - dayAberration || forcePumping) {

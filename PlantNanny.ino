@@ -2,6 +2,7 @@
 
 #ifdef DEBUG
 	#define TRACE(d) dbgSerial.println(d)
+  #define LOGGING
 #else
 	#define TRACE(d)
 #endif
@@ -32,17 +33,35 @@
 
 #define ADC_REF 3.3
 
+/*
+Watchdog requires Optiboot firmware, otherwise a WDT-reset will result in an endless reboot
+*/
+
+uint8_t mcusr_mirror __attribute__((section(".noinit")));
+
+void get_mcusr(void) \
+  __attribute__((naked)) \
+  __attribute__((section(".init3")));
+void get_mcusr(void) {
+  mcusr_mirror = MCUSR;
+  MCUSR = 0;
+  wdt_disable();
+}
+
 const char* HOST_NAME = "d-parc.be";
-unsigned int MOISTURE_PUMP_THRESHOLD = 700;
+unsigned int MOISTURE_PUMP_THRESHOLD = 720;
 
 OLED oled;
 
 volatile float Tavg;
 volatile float Tnow;
 volatile float vcc;
+volatile byte sendPumpPingFlag;
 
 const float Talpha = 0.005;
 const float moistureAlpha = 0.1;
+
+unsigned int tAvgCounter=0;
 
 int moisture =  0;
 
@@ -88,22 +107,6 @@ volatile boolean tick = false;
 unsigned long sendTS = 0L;
 bool waitingForResponse = false;
 int DAY_ABR_ZERO = 20;
-
-
-/*
-Watchdog requires Optiboot firmware, otherwise a WDT-reset will result in an endless reboot
-*/
-
-uint8_t mcusr_mirror __attribute__((section(".noinit")));
-
-void get_mcusr(void) \
-	__attribute__((naked)) \
-	__attribute__((section(".init3")));
-void get_mcusr(void) {
-	mcusr_mirror = MCUSR;
-	MCUSR = 0;
-	wdt_disable();
-}
 
 
 boolean setupWiFi() {
@@ -190,20 +193,27 @@ float readVcc() {
 
 void setupTimer() {
   // set timer to 1 sec
-	cli();          // disable global interrupts
-	TCCR1A = 0;     // set entire TCCR1A register to 0
-	TCCR1B = 0;     // same for TCCR1B
-
-	// set compare match register to desired timer count:
+  noInterrupts();
+	// cli();          // disable global interrupts
+ 	TCCR1A = 0;     // set entire TCCR1A register to 0
+ 	TCCR1B = 0;     // same for TCCR1B
+ 	// set compare match register to desired timer count:
 	OCR1A = 15624;
-	// turn on CTC mode:
+ 	// turn on CTC mode:
 	TCCR1B |= (1 << WGM12);
-	// Set CS10 and CS12 bits for 1024 prescaler:
+ 	// Set CS10 and CS12 bits for 1024 prescaler:
 	TCCR1B |= (1 << CS10);
 	TCCR1B |= (1 << CS12);
-	// enable timer compare interrupt:
-	TIMSK1 |= (1 << OCIE1A);
-	sei();          // enable global interrupts  
+ 	
+ 	//sei();          // enable global interrupts  
+  interrupts();
+ }
+
+void enableTimer() {
+  noInterrupts();
+  // enable timer compare interrupt:
+  TIMSK1 |= (1 << OCIE1A);
+  interrupts();
 }
 
 float readTemperature()
@@ -216,20 +226,81 @@ float readTemperature()
   return temp;
 }
 
-ISR(TIMER1_COMPA_vect) {
-	Tnow = readTemperature();
+void readSensors() {
+  Tnow = readTemperature();
 
-	// once in a minute update the average temperature
-	tickCounter = (tickCounter+1) % 60;
-	if (tickCounter == 0) {
-		Tavg = (Tnow * Talpha) + Tavg*(1.0 - Talpha);
-	}
+  // once in a minute update the average temperature
+  tickCounter = (tickCounter+1) % 60;
+  if (tickCounter == 0) {
+    // Tavg = (Tnow * Talpha) + Tavg*(1.0 - Talpha);
+    float t = (float)tAvgCounter * Tavg;
+    tAvgCounter++;
+    t += Tnow;
+    Tavg = t / (float)tAvgCounter;
+    
+  }
   
-	moisture = (int)((float)readMoisture() * moistureAlpha + (float)moisture * (1.0 - moistureAlpha));
-	
+  moisture = (int)((float)readMoisture() * moistureAlpha + (float)moisture * (1.0 - moistureAlpha));
+  
+}
+
+void handleFSM() {
+  switch (state) {
+    case IDLE:
+      if (now > nextPumpTS - dayAberration || forcePumping) {
+        state = PUMP;
+        tAvgCounter=10;
+        
+        //oled.setCursor(0, 1);
+        if (moisture < MOISTURE_PUMP_THRESHOLD || forcePumping) {
+          digitalWrite(PUMP_PIN, HIGH);
+          digitalWrite(LED_BUILTIN, HIGH);
+          //oled.print("pumping     ");
+          sendPumpPingFlag=2;
+        }
+        else {
+          //oled.print("pump suspend");
+          sendPumpPingFlag=1;
+        }
+        forcePumping = false;
+        lastPumpTS = now;
+      }
+      else {
+        float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
+        dayAberration = (long)(abFac*(float)oneDay);
+
+        long Tdiff = (long)(nextPumpTS - dayAberration) - now;
+        // oled.setCursor(0, 1);
+        /*
+        oled.print(Tdiff / 3600L);
+        oled.print(":");
+        oled.print((Tdiff % 3600L) / 60L);
+        oled.print(":");
+        oled.print((Tdiff % 3600L) % 60L);
+        */
+      }
+      break;
+    case PUMP:
+      if (now > lastPumpTS + 65L) {
+        state = IDLE;
+        digitalWrite(PUMP_PIN, LOW);
+        digitalWrite(LED_BUILTIN, LOW);
+        //oled.clear();
+        nextPumpTS = now + oneDay;
+      }
+      break;
+    }
+}
+
+ISR(TIMER1_COMPA_vect) {
+	noInterrupts();
 	now++;
 	// digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	tick = true;
+
+  readSensors();
+  handleFSM();
+  interrupts();
 }
 
 unsigned int readPumpThreshold() {
@@ -251,9 +322,10 @@ int readDayAbrZero() {
 
 void sendSensorData() {
 	if (wifi.test() != ESP8266_COMMAND_OK) {
+    wdt_reset();
 		wifi.restart();
+    wdt_reset();
 		delay(1000);
-		wdt_reset();
 		setupWiFi();
 	}
 	else {
@@ -290,9 +362,9 @@ void sendPumpPing(boolean pump) {
 	if (wifi.test() != ESP8266_COMMAND_OK) {
 		wifi.restart();
 		delay(1000);
-		wdt_reset();
+		wdt_disable();
 		setupWiFi();
-		wdt_reset();
+		wdt_enable(WDTO_4S);
 	}
 	else {
 		// reset
@@ -307,6 +379,7 @@ void sendPumpPing(boolean pump) {
 		url.concat(F("s[]=1,P,0&s[]=2,P,0"));
 	}
 	sendTS = now;
+  wdt_reset();
 	http.get(serverIP, HOST_NAME, url.c_str());
 	wdt_reset();
 	waitingForResponse = true;
@@ -361,6 +434,8 @@ void receiveHttp() {
 
 void parseReceivedData(const char* data) {
 	String str(data);
+  TRACE("rec data:\r\n");
+  TRACE(data);
 	int iEqual = -1;
 	do {
 		int newEqual = str.indexOf('=', iEqual+1);
@@ -397,7 +472,8 @@ void parseReceivedData(const char* data) {
 }
 
 void setup() {
-  wasWDTReset = mcusr_mirror && (1 << WDRF) == WDRF;
+  wasWDTReset = bitRead( mcusr_mirror,WDRF);
+  wdt_disable();
   
   digitalWrite(MOISTURE_SWITCH, HIGH);
   
@@ -408,7 +484,7 @@ void setup() {
   TRACE("> Starting");
   
   if (wasWDTReset) {
-    TRACE(F("WDT Reset"));
+    TRACE(" WDT Reset");
   }
 
   pinMode(LED_BUILTIN, OUTPUT);
@@ -433,9 +509,16 @@ void setup() {
   digitalWrite(PUMP_PIN, LOW);
   oled.print("ok");
   delay(1000);
-
-  setupWiFi();
-    
+  
+  TRACE("timer setup..");
+  setupTimer();
+  TRACE("done."); 
+  
+  bool res=setupWiFi();
+  #ifdef DEBUG
+  TRACE("Wifi-setup:");
+  TRACE(res ? "OK" : "FAILED");
+  #endif;
   delay(1000);
 
   Tnow = Tavg = readTemperature();
@@ -444,19 +527,34 @@ void setup() {
 
   vcc = readVcc();
   
-  setupTimer();
-  // enable watchdog-timer at 4 seconds
-  wdt_enable(WDTO_4S);
+// enable watchdog-timer at 4 seconds
+  TRACE("enable WDT"); 
+  wdt_enable(WDTO_4S); 
+  
+  TRACE("enable Timer IRQ");
+  enableTimer();
+  TRACE("setup done"); 
 }
 
 
-void loop()
-{
+void loop() {
 	
 	wdt_reset();
 	if (sendTS == 0L || now - sendTS > 300) {
 		sendSensorData();
 	}
+
+  if (sendPumpPingFlag > 0) {
+    sendPumpPing( sendPumpPingFlag==2 );
+    oled.setCursor(0,0);
+    if (sendPumpPingFlag==2) {
+      oled.print("pumping     ");
+    }
+    else {
+      oled.print("pump suspend");
+    }
+    sendPumpPingFlag=0;
+  }
 
 	if (waitingForResponse && http.available()) {
 		receiveHttp();
@@ -464,7 +562,7 @@ void loop()
 
 	if (tick) {
 		tick = false;
-
+   
 		oled.setCursor(0, 1);
     if (now % 2 == 0) {
 		  oled.print((int)Tavg);
@@ -474,47 +572,22 @@ void loop()
       oled.print(vcc, 2);
       oled.print("V ");
     }
-		switch (state) {
-		case IDLE:
-			if (now > nextPumpTS - dayAberration || forcePumping) {
-				state = PUMP;
-				oled.setCursor(0, 1);
-				if (moisture < MOISTURE_PUMP_THRESHOLD || forcePumping) {
-					digitalWrite(PUMP_PIN, HIGH);
-					digitalWrite(LED_BUILTIN, HIGH);
-					oled.print("pumping     ");
-					sendPumpPing(true);
-				}
-				else {
-					oled.print("pump suspend");
-					sendPumpPing(false);
-				}
-        forcePumping = false;
-				lastPumpTS = now;
-			}
-			else {
-				float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
-				dayAberration = (long)(abFac*(float)oneDay);
 
-				long Tdiff = (long)(nextPumpTS - dayAberration) - now;
-				// oled.setCursor(0, 1);
-				oled.print(Tdiff / 3600L);
-				oled.print(":");
-				oled.print((Tdiff % 3600L) / 60L);
-				oled.print(":");
-				oled.print((Tdiff % 3600L) % 60L);
-			}
-			break;
-		case PUMP:
-			if (now > lastPumpTS + 65L) {
-				state = IDLE;
-				digitalWrite(PUMP_PIN, LOW);
-				digitalWrite(LED_BUILTIN, LOW);
-				oled.clear();
-				nextPumpTS = now + oneDay;
-			}
-			break;
-		}
+    if (state==IDLE) {
+      
+        float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
+        dayAberration = (long)(abFac*(float)oneDay);
+
+        long Tdiff = (long)(nextPumpTS - dayAberration) - now;
+        // oled.setCursor(0, 1);
+        
+        oled.print(Tdiff / 3600L);
+        oled.print(":");
+        oled.print((Tdiff % 3600L) / 60L);
+        oled.print(":");
+        oled.print((Tdiff % 3600L) % 60L);
+   
+    } 
 	}
 	
 }

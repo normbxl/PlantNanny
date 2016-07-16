@@ -1,4 +1,4 @@
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 	#define TRACE(d) dbgSerial.println(d)
@@ -32,6 +32,8 @@
 #define WIFI_PWD "d0tlab1$$up1"
 
 #define ADC_REF 3.3
+#define WWW_UPDATE_INTERVAL 300
+
 
 /*
 Watchdog requires Optiboot firmware, otherwise a WDT-reset will result in an endless reboot
@@ -293,14 +295,14 @@ void handleFSM() {
 }
 
 ISR(TIMER1_COMPA_vect) {
-	noInterrupts();
+	// noInterrupts();
 	now++;
 	// digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	tick = true;
 
   readSensors();
   handleFSM();
-  interrupts();
+  // interrupts();
 }
 
 unsigned int readPumpThreshold() {
@@ -321,17 +323,20 @@ int readDayAbrZero() {
 }
 
 void sendSensorData() {
+  TRACE(F("Sending sensor data.."));
 	if (wifi.test() != ESP8266_COMMAND_OK) {
     wdt_reset();
+    TRACE(F("restarting WiFi"));
 		wifi.restart();
     wdt_reset();
 		delay(1000);
+    TRACE(F("re-setup WiFi"));
 		setupWiFi();
 	}
-	else {
+	//else {
 		// reset
-		http.stop();
-	}
+	//	http.stop();
+	//}
 	wdt_reset();
   // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump, V-oltage), value
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
@@ -342,8 +347,12 @@ void sendSensorData() {
   url.concat(vcc);
 	oled.setCursor(0, 0);
 	oled.print("TX ");
-	
+
+	TRACE(F("Sending request:"));
+  TRACE(url);
 	int err = http.get(serverIP, HOST_NAME, url.c_str());
+  TRACE(F("result:"));
+  TRACE(err);
 	wdt_reset();
 	if (err > 0) {
 		oled.print("c:");
@@ -366,10 +375,10 @@ void sendPumpPing(boolean pump) {
 		setupWiFi();
 		wdt_enable(WDTO_4S);
 	}
-	else {
+	//else {
 		// reset
-		http.stop();
-	}
+	//	http.stop();
+	//}
 
 	String url = F("/plant_nanny/update.php?cmd=save&");
 	if (pump) {
@@ -387,14 +396,15 @@ void sendPumpPing(boolean pump) {
 
 void receiveHttp() {
 	waitingForResponse = false;
-
+  TRACE(F("Receiving data.."));
 	oled.setCursor(0, 0);
 	oled.print("RX ");
 	int err = http.responseStatusCode();
 	oled.print("#");
 	
 	oled.print(err);
-	err = 200;
+  TRACE(err);
+	// err = 200;
 	if (err == 200) {
 		int res = http.skipResponseHeaders();
 		TRACE(F("Transfer Encoding:"));
@@ -421,7 +431,10 @@ void receiveHttp() {
 			parseReceivedData((char*)buffer);
 
 			free(buffer);
-
+      // empty RX buffer;
+      while (http.available() > 0) {
+        http.read();
+      }
 		}
 		else {
 			oled.print("MALLOC ");
@@ -477,7 +490,7 @@ void setup() {
   
   digitalWrite(MOISTURE_SWITCH, HIGH);
   
-  Serial.begin(115200);
+  Serial.begin(9600);
 #ifdef DEBUG
   dbgSerial.begin(9600);
 #endif
@@ -518,7 +531,7 @@ void setup() {
   #ifdef DEBUG
   TRACE("Wifi-setup:");
   TRACE(res ? "OK" : "FAILED");
-  #endif;
+  #endif
   delay(1000);
 
   Tnow = Tavg = readTemperature();
@@ -540,7 +553,7 @@ void setup() {
 void loop() {
 	
 	wdt_reset();
-	if (sendTS == 0L || now - sendTS > 300) {
+	if (sendTS == 0L || now - sendTS > WWW_UPDATE_INTERVAL) {
 		sendSensorData();
 	}
 

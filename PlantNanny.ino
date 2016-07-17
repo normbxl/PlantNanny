@@ -1,4 +1,4 @@
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 	#define TRACE(d) dbgSerial.println(d)
@@ -297,7 +297,7 @@ void handleFSM() {
 ISR(TIMER1_COMPA_vect) {
 	// noInterrupts();
 	now++;
-	// digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+	digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 	tick = true;
 
   readSensors();
@@ -527,10 +527,17 @@ void setup() {
   setupTimer();
   TRACE("done."); 
   
-  bool res=setupWiFi();
+  bool res=false;
+  byte si=0;
+  do {
+    res=setupWiFi();
+    si++;
+  }
+  while (res==false && si < 10);
   #ifdef DEBUG
   TRACE("Wifi-setup:");
-  TRACE(res ? "OK" : "FAILED");
+  TRACE(res ? "OK " : "FAILED ");
+  TRACE(si);
   #endif
   delay(1000);
 

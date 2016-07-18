@@ -1,4 +1,4 @@
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 	#define TRACE(d) dbgSerial.println(d)
@@ -59,6 +59,8 @@ volatile float Tavg;
 volatile float Tnow;
 volatile float vcc;
 volatile byte sendPumpPingFlag;
+
+long Tdiff;
 
 const float Talpha = 0.005;
 const float moistureAlpha = 0.1;
@@ -239,7 +241,8 @@ void readSensors() {
     tAvgCounter++;
     t += Tnow;
     Tavg = t / (float)tAvgCounter;
-    
+    TRACE("Tavg=");
+    TRACE(Tavg);
   }
   
   moisture = (int)((float)readMoisture() * moistureAlpha + (float)moisture * (1.0 - moistureAlpha));
@@ -271,15 +274,8 @@ void handleFSM() {
         float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
         dayAberration = (long)(abFac*(float)oneDay);
 
-        long Tdiff = (long)(nextPumpTS - dayAberration) - now;
-        // oled.setCursor(0, 1);
-        /*
-        oled.print(Tdiff / 3600L);
-        oled.print(":");
-        oled.print((Tdiff % 3600L) / 60L);
-        oled.print(":");
-        oled.print((Tdiff % 3600L) % 60L);
-        */
+        Tdiff = (long)(nextPumpTS - dayAberration) - now;
+        
       }
       break;
     case PUMP:
@@ -338,13 +334,15 @@ void sendSensorData() {
 	//	http.stop();
 	//}
 	wdt_reset();
-  // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump, V-oltage), value
+  // format of s[]: sensor-ID, Type (M-oisture, T-emperature, P-ump, V-oltage,D-elta time), value
 	String url = F("/plant_nanny/update.php?cmd=save&s[]=1,M,");
 	url.concat(moisture);
-	url.concat("&s[]=3,T,");
-	url.concat(Tavg);
-  url.concat("&s[]=4,V,");
-  url.concat(vcc);
+	url.concat(F("&s[]=3,T,"));
+	url.concat(Tnow);
+  url.concat(F("&s[]=4,D,"));
+  url.concat(Tdiff);
+  url.concat(F("&s[]=5,T,"));
+  url.concat(Tavg);
 	oled.setCursor(0, 0);
 	oled.print("TX ");
 
@@ -589,8 +587,8 @@ void loop() {
 		  oled.print("C ");
     }
     else {
-      oled.print(vcc, 2);
-      oled.print("V ");
+      oled.print(max(0, (int)(((moisture-MOISTURE_PUMP_THRESHOLD)*100) / (1023-MOISTURE_PUMP_THRESHOLD))));
+      oled.print("% ");
     }
 
     if (state==IDLE) {
@@ -598,7 +596,7 @@ void loop() {
         float abFac = (exp((17.62 * Tavg) / (273.12 + Tavg))) / (float)DAY_ABR_ZERO; // Null-wert bei avg $DAY_ABR_ZERO °C
         dayAberration = (long)(abFac*(float)oneDay);
 
-        long Tdiff = (long)(nextPumpTS - dayAberration) - now;
+        Tdiff = (long)(nextPumpTS - dayAberration) - now;
         // oled.setCursor(0, 1);
         
         oled.print(Tdiff / 3600L);

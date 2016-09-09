@@ -1,4 +1,4 @@
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 	#define TRACE(d) dbgSerial.println(d)
@@ -89,7 +89,7 @@ ESP8266Client espClient(wifi);
 	HttpClient http = HttpClient(espClient);
 #endif
 
-IPAddress serverIP(46, 30, 212, 138);
+IPAddress serverIP(46, 30, 213, 204);
 
 enum States {
 	IDLE,
@@ -527,6 +527,10 @@ void setup() {
   
   bool res=false;
   byte si=0;
+  if (wifi.restart()==false) {
+    oled.setCursor(0,0);
+    oled.print("wifi RST fail");
+  }
   do {
     res=setupWiFi();
     si++;

@@ -28,8 +28,8 @@
 
 #define ROM_ADDRESS 23
 
-#define WIFI_SSID "lovely-N"
-#define WIFI_PWD "d0tlab1$$up1"
+#define WIFI_SSID "<SSID>"
+#define WIFI_PWD "<PWD>"
 
 #define ADC_REF 3.3
 #define WWW_UPDATE_INTERVAL 300
